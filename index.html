@@ -1,1 +1,1397 @@
 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0b3d5c">
+<meta name="referrer" content="no-referrer-when-downgrade">
+<!-- Allow embedding in an iframe (e.g. an Experience Builder app or an
+     internal CUSEC portal page), matching the pattern used in the source
+     PREDS app this was forked from. Browsers ignore CSP in <meta>, but it
+     documents intent. -->
+<meta http-equiv="Content-Security-Policy" content="frame-ancestors *">
+<script>
+  (function() {
+    const p = new URLSearchParams(window.location.search);
+    if (p.get('layout') === 'full') document.documentElement.classList.add('layout-full');
+  })();
+</script>
+<title>RVS Migration Compare</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  /* ── CUSEC placeholder brand tokens ─────────────────────────────
+     These are NOT CUSEC's verified brand hex values — I couldn't
+     confirm exact brand colors from cusec.org, so this is a
+     professional, neutral placeholder (deep slate-blue + a seismic
+     amber accent) in the same spirit as the source app's TN flag
+     colors. Swap --cusec-primary / --cusec-accent (and the mark in
+     the login/header SVG below) for CUSEC's real logo/colors before
+     you ship this. */
+  :root {
+    --bg: #f0f2f5; --surface: #ffffff; --surface2: #f7f8fa; --border: #e2e5ea;
+    --text: #0f1117; --text2: #444c5c; --text3: #4f5665;
+    --cusec-primary: #0b3d5c; --cusec-primary-dark: #072840; --cusec-accent: #d98324;
+    --match: #1f8a4c; --mismatch: #c5221f; --sourceonly: #6d4c41; --targetonly: #1565c0;
+    --focus: #ffbf47;
+    --shadow: 0 2px 12px rgba(0,0,0,0.08); --shadow-lg: 0 8px 32px rgba(0,0,0,0.14);
+    --radius: 14px; --radius-sm: 8px;
+  }
+  html, body { height: 100%; margin: 0; padding: 0; overscroll-behavior-y: none; font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+  #app { display: flex; flex-direction: column; height: 100%; min-height: 100vh; max-width: 520px; margin: 0 auto; background: var(--bg); }
+  #app[hidden] { display: none !important; }
+  .layout-full #app { max-width: 100%; margin: 0; }
+  /* ── Login screen ────────────────────────────────────────── */
+  #login-screen {
+    position: fixed; inset: 0; z-index: 5000;
+    background: linear-gradient(165deg, var(--cusec-primary) 0%, var(--cusec-primary-dark) 100%);
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px; padding-top: max(24px, env(safe-area-inset-top));
+    padding-bottom: max(24px, env(safe-area-inset-bottom));
+  }
+  #login-screen[hidden] { display: none; }
+  .login-card { width: 100%; max-width: 420px; background: var(--surface); border-radius: 18px; padding: 28px 24px 22px; box-shadow: var(--shadow-lg); }
+  .login-brand { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-bottom: 18px; }
+  .brand-badge { width: 56px; height: 56px; }
+  .login-title { font-size: 18px; font-weight: 700; color: var(--text); text-align: center; letter-spacing: -0.3px; }
+  .login-sub { font-size: 13px; color: var(--text2); text-align: center; line-height: 1.4; max-width: 340px; margin: 0 auto; }
+  .login-error { background: #fde8ea; border: 1px solid #f5c2c7; color: #842029; padding: 10px 12px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.4; display: none; margin-top: 14px; }
+  .login-error.visible { display: block; }
+  .login-btn-oauth {
+    width: 100%; padding: 14px; border: none; border-radius: var(--radius-sm);
+    background: var(--cusec-primary); color: white; font-size: 15px; font-weight: 700;
+    font-family: 'DM Sans', sans-serif; cursor: pointer; min-height: 48px;
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    transition: opacity 0.15s, transform 0.05s; margin-top: 18px;
+  }
+  .login-btn-oauth:hover { opacity: 0.92; }
+  .login-btn-oauth:active { transform: scale(0.99); }
+  #oauth-fallback { display:block;text-align:center;font-size:12px;color:var(--text3);margin-top:10px;text-decoration:underline;cursor:pointer; }
+  :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+  .skip-link { position: absolute; top: -100px; left: 0; z-index: 9999; background: var(--focus); color: #000; font-weight: 700; font-size: 14px; padding: 10px 16px; border-radius: 0 0 8px 0; text-decoration: none; transition: top 0.2s; }
+  .skip-link:focus { top: 0; }
+  /* ── Header ──────────────────────────────────────────────── */
+  #header { background: var(--cusec-primary); padding: 12px 16px 10px; flex-shrink: 0; z-index: 100; padding-top: max(12px, env(safe-area-inset-top)); }
+  .header-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; gap: 8px; }
+  .app-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .header-badge { width: 34px; height: 34px; display: block; flex-shrink: 0; }
+  .app-title-text { display: flex; flex-direction: column; min-width: 0; }
+  .app-title-main { color: white; font-size: 15px; font-weight: 700; letter-spacing: -0.2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .app-title-scope { color: rgba(255,255,255,0.75); font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .header-pills { display: flex; gap: 6px; flex-shrink: 0; }
+  .header-pill {
+    display: flex; align-items: center; gap: 5px; font-size: 12px; font-family: 'DM Mono', monospace;
+    color: white; background: rgba(255,255,255,0.18); border: 1.5px solid rgba(255,255,255,0.5);
+    border-radius: 20px; padding: 6px 11px; cursor: pointer; transition: background 0.15s; white-space: nowrap;
+    font-weight: 600; min-height: 36px;
+  }
+  .header-pill:hover { background: rgba(255,255,255,0.28); }
+  .header-pill.icon-only { padding: 6px; aspect-ratio: 1; justify-content: center; }
+  .search-wrap { position: relative; margin-bottom: 8px; }
+  .search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text3); pointer-events: none; }
+  #search-input {
+    width: 100%; padding: 10px 10px 10px 34px; border: 2px solid var(--border); border-radius: var(--radius-sm);
+    font-family: 'DM Sans', sans-serif; font-size: 16px; background: var(--surface); color: var(--text); outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  #search-input:focus { border-color: var(--focus); box-shadow: 0 0 0 3px rgba(255,191,71,0.35); }
+  /* ── Result-type filter chips ─────────────────────────────── */
+  .chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .rtchip {
+    padding: 5px 11px; border-radius: 16px; border: 1.5px solid rgba(255,255,255,0.35);
+    background: rgba(255,255,255,0.08); color: #fff; font-size: 11px; font-weight: 700;
+    font-family: 'DM Sans', sans-serif; cursor: pointer; transition: all 0.15s; white-space: nowrap;
+    display: flex; align-items: center; gap: 5px;
+  }
+  .rtchip:hover { background: rgba(255,255,255,0.18); }
+  .rtchip.active { background: #fff; color: var(--cusec-primary); border-color: #fff; }
+  .rtchip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  #loading-bar { display:none; height:3px; background: rgba(255,255,255,0.3); border-radius:2px; overflow:hidden; margin-bottom:2px; }
+  #loading-bar .bar { height:100%; width:40%; background:white; border-radius:2px; animation: loadbar 1.2s ease-in-out infinite; }
+  @keyframes loadbar { 0%{transform:translateX(-100%)} 100%{transform:translateX(350%)} }
+  /* ── Scope picker (full-screen, shown before the map/list) ──── */
+  #scope-screen {
+    position: fixed; inset: 0; z-index: 4500;
+    background: linear-gradient(165deg, var(--cusec-primary) 0%, var(--cusec-primary-dark) 100%);
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px; padding-top: max(24px, env(safe-area-inset-top));
+    padding-bottom: max(24px, env(safe-area-inset-bottom));
+  }
+  #scope-screen[hidden] { display: none; }
+  .scope-screen-card { width: 100%; max-width: 460px; max-height: 88vh; background: var(--surface); border-radius: 18px; padding: 22px 20px 20px; box-shadow: var(--shadow-lg); display: flex; flex-direction: column; }
+  .scope-screen-header { margin-bottom: 14px; flex-shrink: 0; }
+  .scope-screen-header h2 { font-size: 18px; font-weight: 700; color: var(--text); letter-spacing: -0.3px; margin-bottom: 4px; }
+  .scope-screen-sub { font-size: 13px; color: var(--text2); line-height: 1.4; }
+  #scope-search { margin-bottom: 10px; flex-shrink: 0; }
+  .scope-screen-list { overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 2px; }
+  .scope-screen-loading { text-align: center; padding: 28px 12px; color: var(--text3); font-size: 13px; }
+  .scope-option {
+    width: 100%; text-align: left; background: var(--surface2); border: 2px solid var(--border);
+    border-radius: var(--radius-sm); padding: 12px 14px; cursor: pointer; font-family: 'DM Sans', sans-serif;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .scope-option:hover { border-color: var(--cusec-primary); background: var(--surface); }
+  .scope-option-name { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+  .scope-option-counts { display: flex; gap: 10px; font-size: 12px; }
+  .scope-count { display: flex; align-items: center; gap: 5px; font-weight: 700; }
+  .scope-count-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .scope-count.zero { opacity: 0.45; }
+  /* ── Map ─────────────────────────────────────────────────── */
+  #map-container { flex-shrink: 0; height: 26vh; min-height: 160px; position: relative; }
+  #map { width: 100%; height: 100%; }
+  #map-toggle-btn {
+    position: absolute; top: 10px; right: 10px; z-index: 690;
+    background: var(--surface); color: var(--text2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 10px; font-size: 11px; font-weight: 700;
+    font-family: 'DM Sans', sans-serif; cursor: pointer; box-shadow: var(--shadow);
+  }
+  #map-container.collapsed { height: 0; min-height: 0; }
+  #map-legend {
+    position: absolute; bottom: 8px; left: 8px; z-index: 690;
+    background: rgba(255,255,255,0.95); border-radius: 8px; padding: 6px 9px;
+    font-size: 10px; font-weight: 700; display: flex; gap: 10px; box-shadow: var(--shadow);
+  }
+  .map-legend-item { display: flex; align-items: center; gap: 4px; }
+  .map-legend-dot { width: 9px; height: 9px; border-radius: 50%; }
+  /* ── List ────────────────────────────────────────────────── */
+  #list-section { flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  .list-controls { position: sticky; top: 0; z-index: 10; background: var(--bg); box-shadow: 0 1px 0 rgba(0,0,0,0.04); }
+  .list-header { padding: 10px 16px 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .list-count { font-size: 12px; font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: 0.6px; }
+  #last-refreshed { font-size: 11px; color: var(--text3); font-family: 'DM Mono', monospace; margin-top: 2px; }
+  .stale-badge { display: inline-block; background: #fdeed3; color: #6b4200; border: 1px solid #d4920a; padding: 1px 6px; border-radius: 6px; font-size: 10px; font-weight: 700; margin-right: 4px; vertical-align: 1px; }
+  #asset-list { display: flex; flex-direction: column; padding: 0 0 80px; }
+  /* ── Card ────────────────────────────────────────────────── */
+  .cmp-card { background: var(--surface); margin: 0 12px 8px; border-radius: var(--radius); box-shadow: var(--shadow); border: 2px solid transparent; cursor: pointer; transition: all 0.2s; overflow: hidden; }
+  .cmp-card:hover { box-shadow: var(--shadow-lg); transform: translateY(-1px); }
+  .cmp-card:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-color: transparent; }
+  .card-body { display: flex; align-items: stretch; }
+  .card-strip { width: 5px; flex-shrink: 0; }
+  .card-content { flex: 1; padding: 13px 13px 10px; min-width: 0; }
+  .card-top { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 6px; }
+  .status-icon { width: 34px; height: 34px; border-radius: 9px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: white; }
+  .status-icon svg { width: 18px; height: 18px; }
+  .card-titles { flex: 1; min-width: 0; }
+  .card-name { font-size: 14px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -0.2px; }
+  .card-addr { font-size: 12px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  .status-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; flex-shrink: 0; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
+  .meta-badges { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
+  .meta-badge { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; white-space: nowrap; background: var(--surface2); border: 1px solid var(--border); color: var(--text2); }
+  .meta-badge.mismatch { background: #fde8e8; border-color: #f3b9b7; color: var(--mismatch); }
+  .meta-badge.match { background: #e6f4ea; border-color: #b7dfc2; color: var(--match); }
+  /* ── Empty / status ──────────────────────────────────────── */
+  .empty-state { text-align: center; padding: 48px 24px; color: var(--text3); }
+  .empty-state .icon { font-size: 36px; margin-bottom: 12px; }
+  .empty-state p { font-size: 14px; line-height: 1.5; }
+  .offline-banner { background: #fdeed3; border-bottom: 1px solid #d4920a; color: #6b4200; padding: 8px 14px; font-size: 12px; text-align: center; font-weight: 600; }
+  .leaflet-popup-content-wrapper { border-radius: var(--radius-sm) !important; box-shadow: var(--shadow-lg) !important; font-family: 'DM Sans',sans-serif !important; padding: 0 !important; }
+  .leaflet-popup-content { margin: 0 !important; }
+  .pop { padding: 11px 13px; min-width: 170px; }
+  .pop-source { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 3px; }
+  .pop-name { font-size: 13px; font-weight: 700; margin-bottom: 2px; color: var(--text); }
+  .pop-addr { font-size: 11px; color: var(--text2); }
+  /* ── Detail Sheet ────────────────────────────────────────── */
+  #detail-sheet { position: fixed; inset: 0; z-index: 2000; pointer-events: none; }
+  #detail-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.55); opacity: 0; transition: opacity 0.3s; }
+  #detail-content {
+    position: absolute; bottom: 0; left: 0; right: 0; max-width: 520px; margin: 0 auto;
+    background: var(--surface); border-radius: 20px 20px 0 0;
+    padding: 0 0 env(safe-area-inset-bottom,20px);
+    transform: translateY(100%); transition: transform 0.35s cubic-bezier(0.32,0.72,0,1);
+    max-height: 90vh; overflow-y: auto;
+  }
+  #detail-sheet.open { pointer-events: all; }
+  #detail-sheet.open #detail-overlay { opacity: 1; }
+  #detail-sheet.open #detail-content { transform: translateY(0); }
+  .sheet-handle { width: 36px; height: 4px; background: var(--border); border-radius: 2px; margin: 12px auto 0; }
+  .sheet-close-btn { position: absolute; top: 12px; right: 16px; background: var(--surface2); border: 1px solid var(--border); border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 18px; line-height: 1; color: var(--text2); }
+  .sheet-banner { margin: 14px 20px 0; border-radius: var(--radius-sm); padding: 12px 14px; display: flex; align-items: center; gap: 10px; color: white; }
+  .sheet-banner svg { width: 22px; height: 22px; flex-shrink: 0; }
+  .banner-label { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+  .banner-desc { font-size: 12px; margin-top: 2px; opacity: 0.95; line-height: 1.4; }
+  .sheet-header { padding: 14px 20px 10px; }
+  .sheet-name { font-size: 19px; font-weight: 700; letter-spacing: -0.4px; margin-bottom: 3px; }
+  .sheet-addr { font-size: 13px; color: var(--text2); line-height: 1.4; }
+  .sdiv { height: 1px; background: var(--border); margin: 0 20px; }
+  .sec { padding: 14px 20px; }
+  .sec-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text3); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }
+  .sec-summary { font-family: 'DM Mono', monospace; font-weight: 700; }
+  /* Two-column (target vs source) diff grid: label | target | source */
+  .diff-grid { display: grid; grid-template-columns: 130px 1fr 1fr; gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; font-size: 12.5px; }
+  .diff-grid > div { background: var(--surface); padding: 7px 9px; word-break: break-word; }
+  .diff-head { background: var(--surface2) !important; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text3); }
+  .diff-key { color: var(--text3); font-weight: 600; }
+  .diff-val.mismatch { background: #fde8e8 !important; color: var(--mismatch); font-weight: 600; }
+  .diff-val.empty { color: var(--text3); font-style: italic; opacity: 0.7; }
+  .diff-row-mismatch .diff-key { color: var(--mismatch); }
+  .attachment-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }
+  .attachment-col-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text3); margin-bottom: 6px; }
+  .attachment-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+  .attachment-tile { aspect-ratio: 1; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; cursor: pointer; position: relative; display: flex; align-items: center; justify-content: center; color: var(--text3); font-size: 10px; }
+  .attachment-tile img { width: 100%; height: 100%; object-fit: cover; }
+  .attachment-tile.loading { background: linear-gradient(90deg, var(--surface2) 25%, #ececec 50%, var(--surface2) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
+  @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+  .nav-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 0 20px 20px; }
+  .nav-btn { padding: 14px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 700; font-family: 'DM Sans',sans-serif; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; text-decoration: none; transition: opacity 0.15s; min-height: 48px; }
+  .nav-btn:hover { opacity: 0.88; }
+  .nav-btn.goo { background: #1558d6; color: white; }
+  .nav-btn.apl { background: #111; color: white; }
+  /* ── Image lightbox ──────────────────────────────────────── */
+  #lightbox { position: fixed; inset: 0; z-index: 5500; background: rgba(0,0,0,0.92); display: flex; align-items: center; justify-content: center; padding: 24px; }
+  #lightbox[hidden] { display: none; }
+  #lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px; }
+  #lightbox .close { position: absolute; top: max(16px, env(safe-area-inset-top)); right: 16px; background: rgba(0,0,0,0.6); border: 1.5px solid white; color: white; border-radius: 50%; width: 40px; height: 40px; cursor: pointer; font-size: 22px; display: flex; align-items: center; justify-content: center; }
+  @media(min-width:600px){ #app{ box-shadow: var(--shadow-lg); } }
+  @media (min-width: 900px) {
+    #app { display: grid; grid-template-rows: auto 1fr; grid-template-columns: 460px 1fr; max-width: none; width: 100%; height: 100vh; min-height: 100vh; box-shadow: none; }
+    #header        { grid-column: 1 / -1; grid-row: 1; }
+    #list-section  { grid-column: 1; grid-row: 2; border-right: 1px solid var(--border); }
+    #map-container { grid-column: 2; grid-row: 2; height: 100%; }
+    #detail-content { left: 0; right: auto; bottom: 0; width: 460px; max-width: 460px; margin: 0; max-height: calc(100vh - 60px); }
+  }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
+  .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#asset-list">Skip to comparison results</a>
+
+<!-- Generic "seismic wave in a shield" mark — an original glyph, not
+     CUSEC's actual logo (I couldn't verify CUSEC's real brand assets from
+     here). Swap this <svg> for CUSEC's real logo file before shipping. -->
+<template id="brand-mark-tpl">
+  <svg viewBox="0 0 100 100" role="img" aria-label="CUSEC placeholder mark">
+    <rect x="4" y="4" width="92" height="92" rx="18" fill="#0b3d5c"/>
+    <path d="M12 55 L28 55 L34 40 L42 70 L50 30 L58 62 L64 55 L88 55" fill="none" stroke="#d98324" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+</template>
+
+<!-- ════════════════════════════════════════════════════════════
+     LOGIN SCREEN
+     ════════════════════════════════════════════════════════════ -->
+<div id="login-screen" role="dialog" aria-labelledby="login-title">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="brand-badge" id="login-badge"></div>
+      <div>
+        <div class="login-title" id="login-title">RVS Migration Compare</div>
+        <div class="login-sub">Sign in with your ArcGIS Online account to compare RVS records between the Simple Form and Final Form v3 services, by state and county.</div>
+      </div>
+    </div>
+    <div id="login-error" class="login-error" role="alert"></div>
+    <button id="oauth-signin-btn" class="login-btn-oauth" type="button" onclick="startOAuthFlow()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true" style="flex-shrink:0">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+        <circle cx="8.5" cy="7" r="4"/>
+        <polyline points="17 11 19 13 23 9"/>
+      </svg>
+      Sign in with ArcGIS Online
+    </button>
+    <a id="oauth-fallback" href="#" target="_blank" hidden>Sign-in didn't open? Open in a new tab</a>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════
+     SCOPE PICKER (state / county) — shown right after sign-in
+     ════════════════════════════════════════════════════════════ -->
+<div id="scope-screen" role="dialog" aria-labelledby="scope-screen-title" hidden>
+  <div class="scope-screen-card">
+    <div class="scope-screen-header">
+      <h2 id="scope-screen-title">Select a State / County</h2>
+      <div class="scope-screen-sub">Choose which state and county's RVS records to compare between the two services.</div>
+    </div>
+    <div class="search-wrap" id="scope-search">
+      <label for="scope-search-input" class="sr-only">Search state or county</label>
+      <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <input id="scope-search-input" type="search" placeholder="Search state or county…" oninput="renderScopeScreenList()" autocomplete="off">
+    </div>
+    <div id="scope-screen-list" class="scope-screen-list"></div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════
+     MAIN APP — hidden until a scope is picked
+     ════════════════════════════════════════════════════════════ -->
+<div id="app" role="application" aria-label="RVS record comparison" hidden>
+  <header id="header" role="banner">
+    <div class="header-top">
+      <div class="app-title">
+        <div class="header-badge" id="header-badge"></div>
+        <div class="app-title-text">
+          <div class="app-title-main">RVS Migration Compare</div>
+          <div class="app-title-scope" id="scope-label">—</div>
+        </div>
+      </div>
+      <div class="header-pills">
+        <button class="header-pill" onclick="showScopeScreen()" aria-label="Change state/county">
+          <span>Scope</span>
+        </button>
+        <button class="header-pill icon-only" onclick="confirmLogout()" aria-label="Sign out" title="Sign out">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="search-wrap">
+      <label for="search-input" class="sr-only">Search results</label>
+      <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <input id="search-input" type="search" placeholder="Search by address or building name…" oninput="onSearch()" aria-label="Search results" autocomplete="off">
+    </div>
+    <div class="chip-row" id="status-chips"></div>
+    <div id="loading-bar"><div class="bar"></div></div>
+  </header>
+  <div id="offline-banner" class="offline-banner" hidden></div>
+  <div id="map-container" role="region" aria-label="Map showing source and target record locations">
+    <div id="map"></div>
+    <button id="map-toggle-btn" type="button" onclick="toggleMap()">Hide map</button>
+    <div id="map-legend">
+      <div class="map-legend-item"><span class="map-legend-dot" style="background:var(--sourceonly)"></span>Source</div>
+      <div class="map-legend-item"><span class="map-legend-dot" style="background:var(--targetonly)"></span>Target</div>
+      <div class="map-legend-item"><span class="map-legend-dot" style="background:var(--match)"></span>Match</div>
+      <div class="map-legend-item"><span class="map-legend-dot" style="background:var(--mismatch)"></span>Mismatch</div>
+    </div>
+  </div>
+  <main id="list-section" aria-label="Comparison results">
+    <div class="list-controls">
+      <div class="list-header">
+        <div>
+          <div class="list-count" id="list-count" aria-live="polite">Loading…</div>
+          <div id="last-refreshed" aria-live="polite"></div>
+        </div>
+      </div>
+    </div>
+    <div id="asset-list" role="list" aria-label="Comparison result cards"></div>
+  </main>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════
+     DETAIL SHEET
+     ════════════════════════════════════════════════════════════ -->
+<div id="detail-sheet" role="dialog" aria-modal="true" aria-labelledby="detail-asset-name" hidden>
+  <div id="detail-overlay" onclick="closeDetail()"></div>
+  <div id="detail-content">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <button class="sheet-close-btn" onclick="closeDetail()" aria-label="Close details">×</button>
+    <div id="detail-body"></div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════
+     LIGHTBOX (for attachment images)
+     ════════════════════════════════════════════════════════════ -->
+<div id="lightbox" hidden onclick="closeLightbox()">
+  <button class="close" onclick="closeLightbox()" aria-label="Close image">×</button>
+  <img id="lightbox-img" alt="">
+</div>
+
+<script>
+document.querySelectorAll('#login-badge, #header-badge').forEach(el => {
+  el.innerHTML = document.getElementById('brand-mark-tpl').innerHTML;
+});
+
+// ════════════════════════════════════════════════════════════════
+//  CONFIG
+//  ─────
+//  Forked from the PREDS Summary app's OAuth 2.0 authorization-code
+//  (PKCE) flow. Fill in clientId / redirectUri / targetItemId below
+//  before deploying.
+//
+//  clientId / redirectUri: register a new "Application" (Native /
+//  browser app, PKCE, no client secret) in the CUSEC AGOL org, add
+//  your GitHub Pages URL to its Redirect URIs, then paste both here.
+//
+//  sourceItemId is the live RVS L1 Simple Form item already used by
+//  the migration script (RVS_SimpleForm_to_FinalFormV3_Migration.py).
+//  targetItemId is whatever item you publish RVS Final Form v3 as —
+//  paste it in once that's published, same as the migration script.
+// ════════════════════════════════════════════════════════════════
+const CONFIG = {
+  portalUrl:    'https://cusec-hub.maps.arcgis.com',
+  authorizeUrl: 'https://cusec-hub.maps.arcgis.com/sharing/rest/oauth2/authorize',
+  tokenUrl:     'https://cusec-hub.maps.arcgis.com/sharing/rest/oauth2/token',
+  itemInfoUrl:  'https://cusec-hub.maps.arcgis.com/sharing/rest/content/items',
+  // OAuth 2.0
+  clientId:     'tLL27JvnTrH67io6',
+  redirectUri:  'https://cusec-org.github.io/RVS-Side-by-Side/',
+  tokenExpirationMinutes: 20160, // 14 days (max)
+  refreshBufferMs: 5 * 60 * 1000,
+  tokenKey:    'rvscmp_token_v1',
+  cacheKey:    'rvscmp_cache_v1',
+  // Source / target services
+  sourceItemId: '990202890c994bf9b2462bdb00f2bdd3',
+  targetItemId: '307585a0e7ed4c59aa94cb3c08c9ccfb',
+};
+const SIDES = {
+  source: { key: 'source', label: 'RVS Simple Form (Source)', itemId: CONFIG.sourceItemId, color: 'var(--sourceonly)', short: 'Source' },
+  target: { key: 'target', label: 'RVS Final Form v3 (Target)', itemId: CONFIG.targetItemId, color: 'var(--targetonly)', short: 'Target' },
+};
+// Resolved at runtime from each item's `url` (see resolveServiceUrls()) —
+// avoids hardcoding FeatureServer URLs that would go stale on republish.
+let SERVICE_URL = { source: null, target: null };
+
+// ════════════════════════════════════════════════════════════════
+//  FIELD TRANSLATION TABLES
+//  ───────────────────────
+//  Mirrors RVS_SimpleForm_to_FinalFormV3_Migration.py exactly — same
+//  RENAME_MAP / FIELD_VALUE_MAP / CONSOLIDATION_MAP. Applying the same
+//  translation here lets this app diff "what the migration SHOULD have
+//  produced from this source record" against "what's actually sitting
+//  in the target record", field by field. If the migration script's
+//  tables ever change, update both places.
+// ════════════════════════════════════════════════════════════════
+const RENAME_MAP = {
+  YearBuiltEst: 'YearBuiltEstimated',
+  DiaphramOpening: 'DiaphragmOpening',
+  Liquifaction: 'Liquefaction',
+  EstNonstrucSeismicPerformance: 'NonstructuralSeismicPerformance',
+  FEMA_BldgType: 'FEMABuildingType',
+  Hazus_Occupancy: 'HAZUSOccupancy',
+  SAG: 'StoriesAboveGrade',
+  SBG: 'StoriesBelowGrade',
+  first_name_calc: 'FirstNameCalc',
+  isDetailedRequired: 'IsDetailedRequired',
+  isShelter: 'IsShelter',
+  last_name_calc: 'LastNameCalc',
+  reversegeocode_json_output: 'ReverseGeocodeOutput',
+};
+function yn(map) { return { multiple: false, map }; } // shorthand: {choice2:'yes', choice1:'no'} pattern
+const YES_NO = { choice2: 'yes', choice1: 'no' };
+const FIELD_VALUE_MAP = {
+  SoilType: { multiple: false, map: { choice0:'hard_rock', choice1:'avg_rock', choice2:'dense_soil', choice3:'stiff_soil', choice4:'soft_soil', choice5:'poor_soil', choice6:'do_not_know' } },
+  Liquifaction: yn({ choice1:'yes', choice2:'no', choice3:'do_not_know' }),
+  Landslide: yn({ choice1:'yes', choice2:'no', choice3:'do_not_know' }),
+  SurfaceRupture: yn({ choice1:'yes', choice2:'no', choice3:'do_not_know' }),
+  YearBuiltEst: yn(YES_NO), Additions: yn(YES_NO), EngineerReviewExterior: yn(YES_NO),
+  EngineerReviewVertical: yn(YES_NO), PlanIrregularities: yn(YES_NO), EngineerReviewPlan: yn(YES_NO),
+  DrawingsReviewed: yn(YES_NO), EngineerReviewInterior: yn(YES_NO), PerformLevel2: yn(YES_NO),
+  SlopingSiteQ1: yn(YES_NO), SlopingSiteQ2: yn(YES_NO), SetbackQ1: yn(YES_NO), SetbackQ2: yn(YES_NO),
+  SetbackQ3: yn(YES_NO), ShortColumnQ1: yn(YES_NO), ShortColumnQ2: yn(YES_NO), SplitLevelQ1: yn(YES_NO),
+  OtherIrregularityQ1: yn(YES_NO), OtherIrregularityQ2: yn(YES_NO), TorsionalIrr: yn(YES_NO),
+  NonParallelSystem: yn(YES_NO), ReentrantCorner: yn(YES_NO), DiaphramOpening: yn(YES_NO),
+  C1C2BuildingOutofPlane: yn(YES_NO), OtherPlanIrregularity: yn(YES_NO), PoundingAlign: yn(YES_NO),
+  PoundingTaller: yn(YES_NO), PoundingEnd: yn(YES_NO), S2Building: yn(YES_NO), C1Building: yn(YES_NO),
+  PC1RM1BuildingQ1: yn(YES_NO), PC1RM1BuildingQ2: yn(YES_NO), URMQ1: yn(YES_NO), MHQ1: yn(YES_NO),
+  Redundancy: yn(YES_NO), RetrofitQ1: yn(YES_NO), EQ1: yn(YES_NO), EQ2: yn(YES_NO), EQ3: yn(YES_NO),
+  EQ4: yn(YES_NO), EQ5: yn(YES_NO), EQ6: yn(YES_NO), EQ7: yn(YES_NO), IQ1: yn(YES_NO), IQ2: yn(YES_NO),
+  ObservableDamage: yn(YES_NO), PreCodeQ: yn(YES_NO), PostBenchmarkQ: yn(YES_NO),
+  OccupancyOthers: { multiple: true, map: { choice1:'historic', choice2:'government', choice3:'shelter' } },
+  Exterior: { multiple: false, map: { choice1:'partial', choice2:'all_sides', choice3:'aerial' } },
+  ExtFallingHazards: { multiple: true, map: { choice1:'unbraced_chimneys', choice2:'parapets', choice3:'heavy_cladding', choice4:'appendages', choice5:'other' } },
+  Adjacency: { multiple: true, map: { choice1:'pounding', choice2:'falling_hazards_taller', choice3:'structural_damage' } },
+  OtherHazards: { multiple: true, map: { choice1:'pounding_potential', choice2:'falling_hazards', choice3:'geologic_hazards', choice4:'structural_damage' } },
+  Interior: { multiple: false, map: { choice1:'none', choice2:'visible', choice3:'entered' } },
+  Occupancy: { multiple: false, map: { choice1:'assembly', choice2:'industrial', choice3:'utility', choice4:'commercial', choice5:'office', choice6:'warehouse', choice7:'emergency_services', choice8:'school', choice9:'residential', choice10:'other' } },
+  DetailedEvalRecommended: { multiple: false, map: { choice1:'yes_eval_needed', choice2:'no_eval_not_needed', choice3:'no_no_hazards', choice4:'do_not_know' } },
+  WeakSoftStory: { multiple: false, map: { choice0:'no_selection', choice1:'w1_cripple_wall', choice2:'w1_house_over_garage', choice3:'w1a_open_front', choice4:'non_w1_severe', choice5:'non_w1_moderate' } },
+  EstNonstrucSeismicPerformance: { multiple: false, map: { choice1:'detailed_eval_recommended', choice2:'no_eval_hazards_exist', choice3:'no_hazard' } },
+  DetailedEvalRequired: { multiple: true, map: { choice1:'yes_unknown_type', choice2:'yes_low_score', choice3:'yes_other_hazards', choice4:'no' } },
+};
+function translateValue(sourceFieldName, value) {
+  if (value === null || value === undefined || value === '') return value;
+  const info = FIELD_VALUE_MAP[sourceFieldName];
+  if (!info) return value;
+  if (info.multiple) {
+    return String(value).split(/\s+/).map(tok => info.map[tok] || tok).join(' ');
+  }
+  return Object.prototype.hasOwnProperty.call(info.map, String(value)) ? info.map[String(value)] : value;
+}
+const CONSOLIDATION_MAP = {
+  SlopingSite: ['VertIrregularitiesPresent', 'sloping_site'],
+  UnbracedCrippleWall: ['VertIrregularitiesPresent', 'unbraced_cripple_wall'],
+  WeakSoftStoryPresent: ['VertIrregularitiesPresent', 'weak_soft_story'],
+  OutOfPlaneSetback: ['VertIrregularitiesPresent', 'out_of_plane_setback'],
+  InPlaneSetback: ['VertIrregularitiesPresent', 'in_plane_setback'],
+  ShortColumn: ['VertIrregularitiesPresent', 'short_column'],
+  SplitLevels: ['VertIrregularitiesPresent', 'split_levels'],
+  Torsion2: ['PlanIrregularitiesPresent', 'torsion'],
+  NonParallelSystem2: ['PlanIrregularitiesPresent', 'non_parallel_system'],
+  ReentrantCorner2: ['PlanIrregularitiesPresent', 'reentrant_corner'],
+  DiaphragmOpening2: ['PlanIrregularitiesPresent', 'diaphragm_opening'],
+  Beams: ['PlanIrregularitiesPresent', 'beams_misaligned'],
+};
+// Fields present unchanged (same name both sides) that are worth showing
+// in the field-by-field diff. System fields (objectid/globalid/Creation*/
+// Editor etc.) and the State/County/Address/City/Screener identity fields
+// already shown in the sheet header are deliberately left out here.
+// Identity fields — shown in their own section at the top of the diff
+// (and still diffed: a real migration should carry these across
+// unchanged, so a mismatch here is worth flagging even though these
+// aren't used for the header/matching display). State/County are left
+// out since every row in a scope shares the same State/County by
+// definition of the query filter.
+const IDENTITY_COMPARE_FIELDS = ['BuildingName', 'Address', 'City', 'ZIP', 'Screener'];
+const DIRECT_COMPARE_FIELDS = ['SurveyType','DnsReason','DnsOther','Phase','BuildingName','OtherIdentifiers','Use','SoilType','Landslide','SurfaceRupture','YearBuilt','TotalFloorArea','Additions','AdditionsYearBuilt','OccupancyOthers','ScreenerCommentsBuilding','Exterior','OnsiteGenerator','Anchored','Isolators','NaturalGas','GasShutoff','ExtFallingHazards','FallingHazardsOther','Adjacency','PoundingSeparationGap','PoundingStories','ScreenerCommentsExterior','EngineerReviewExterior','EngineerCommentsExterior','EngineerReviewVertical','EngineerCommentsVertical','VertIrregularities','VertIrregularitiesType','PlanIrregularities','PlanIrregularitiesType','OtherHazards','EngineerReviewPlan','EngineerCommentsPlan','Interior','DrawingsReviewed','CodeYear','ScreenerCommentsInterior','EngineerReviewInterior','EngineerCommentsInterior','NonstructuralReview','FlexibleGasLines','EmergencyWaterandFoodSupplies','FurnitureFixturesEquipment','WaterHeaters','FireSuppression','DropCeilings','LayInLightFixtures','BoilersChillersHVACsystems','HeavyEquipment','GasFiredEquipment','OtherMEPEquipment','FuelorPropaneTanks','EgressRoutes','OtherNonstructural','EngineerReview','ReviewComments','Level1Comments','Occupancy','Units','SeismicitySource','SsSpectralAcc','SeismicitySs','S1SpectralAcc','SeismicityS1','Seismicity','BasicScore','PerformLevel2','WeakSoftStory','DetailedEvalRecommended','Level1Score','FinalSL1Score','VL1','PL1','AdjustedBaselineScore','TorsionalIrr','NonParallelSystem','ReentrantCorner','C1C2BuildingOutofPlane','OtherPlanIrregularity','PoundingAlign','PoundingTaller','PoundingEnd','S2Building','C1Building','PC1RM1BuildingQ1','PC1RM1BuildingQ2','URMQ1','MHQ1','Redundancy','RetrofitQ1','Level2Score','EQ1','EQ2','EQ3','EQ4','EQ5','EQ6','EQ7','IQ1','IQ2','ObservableDamage','Level2Comments','DetailedEvalRequired','EssentialFacility','PreCodeQ','PostBenchmarkQ'];
+const RENAMED_COMPARE_FIELDS = Object.entries(RENAME_MAP).map(([src, tgt]) => ({ src, tgt }));
+const CONSOLIDATED_TARGET_FIELDS = ['VertIrregularitiesPresent', 'PlanIrregularitiesPresent'];
+// Human-readable labels for the fields above that aren't self-explanatory.
+const FIELD_LABELS = {
+  SsSpectralAcc: 'SS Spectral Acc (g)', S1SpectralAcc: 'S1 Spectral Acc (g)', VL1: 'Vertical Irr. (VL1)',
+  PL1: 'Plan Irr. (PL1)', AdjustedBaselineScore: "Adjusted Baseline Score (S')", FinalSL1Score: 'Final SL1 Score',
+  DnsReason: 'Did-Not-Screen Reason', DnsOther: 'DNS — Other', PC1RM1BuildingQ1: 'PC1/RM1: roof-to-wall ties',
+  PC1RM1BuildingQ2: 'PC1/RM1: closely spaced walls', URMQ1: 'URM: gable walls present', MHQ1: 'MH: seismic bracing present',
+  C1C2BuildingOutofPlane: 'C1/C2: beams out-of-plane', EQ1: 'Ext. Q1: URM parapet/chimney', EQ2: 'Ext. Q2: heavy cladding/veneer',
+  EQ3: 'Ext. Q3: heavy canopy', EQ4: 'Ext. Q4: URM appendage', EQ5: 'Ext. Q5: hazmat sign', EQ6: 'Ext. Q6: taller adjacent URM',
+  EQ7: 'Ext. Q7: other falling hazard', IQ1: 'Int. Q1: hollow clay tile/brick', IQ2: 'Int. Q2: other falling hazard',
+  VL1_2: 'VL1', SsSpectralAcc2: 'SS',
+};
+function labelFor(field) {
+  return FIELD_LABELS[field] || field.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/^./, c => c.toUpperCase());
+}
+
+// ════════════════════════════════════════════════════════════════
+//  AUTH — OAuth 2.0 with PKCE + silent refresh
+//  Ported near-verbatim from the PREDS Summary app (same flow, just
+//  renamed away from PREDS-specific identifiers).
+// ════════════════════════════════════════════════════════════════
+let TOKEN = null;
+function _randomString(byteLen = 48) {
+  const arr = new Uint8Array(byteLen);
+  crypto.getRandomValues(arr);
+  return _base64url(arr);
+}
+function _base64url(buf) {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  let str = '';
+  for (let i = 0; i < bytes.length; i++) str += String.fromCharCode(bytes[i]);
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+async function _sha256base64url(s) {
+  const buf  = new TextEncoder().encode(s);
+  const hash = await crypto.subtle.digest('SHA-256', buf);
+  return _base64url(new Uint8Array(hash));
+}
+function loadStoredToken() {
+  try {
+    const raw = localStorage.getItem(CONFIG.tokenKey);
+    if (!raw) return null;
+    const t = JSON.parse(raw);
+    if (!t.accessToken || !t.expiresAt) return null;
+    return t;
+  } catch { return null; }
+}
+function saveToken(t) {
+  TOKEN = t;
+  localStorage.setItem(CONFIG.tokenKey, JSON.stringify(t));
+}
+function clearStoredToken() {
+  TOKEN = null;
+  localStorage.removeItem(CONFIG.tokenKey);
+  sessionStorage.removeItem('oauth_verifier');
+  sessionStorage.removeItem('oauth_state');
+}
+function _tokenFromResponse(data) {
+  const now = Date.now();
+  const expSec = Number(data.expires_in) || 7200;
+  const refSec = Number(data.refresh_token_expires_in) || 0;
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token || (TOKEN && TOKEN.refreshToken) || null,
+    expiresAt: now + expSec * 1000,
+    refreshExpiresAt: refSec ? now + refSec * 1000 : (TOKEN && TOKEN.refreshExpiresAt) || null,
+    username: data.username || (TOKEN && TOKEN.username) || null,
+  };
+}
+function isInIframe() {
+  try { return window.self !== window.top; } catch { return true; }
+}
+let _preparedAuthUrl = null;
+function startOAuthFlow() {
+  if (isInIframe()) {
+    const w = 540, h = 720;
+    const left = Math.max(0, (screen.width - w) / 2);
+    const top = Math.max(0, (screen.height - h) / 2);
+    const popup = window.open('about:blank', 'rvscmp_oauth', `width=${w},height=${h},left=${left},top=${top},toolbar=0,menubar=0,scrollbars=1`);
+    if (!popup) { setLoginError('Popup was blocked — please allow popups for this site, then click Sign in again.'); return; }
+    try {
+      popup.document.write('<!doctype html><meta charset="utf-8"><title>Signing in…</title><style>body{font-family:system-ui,sans-serif;padding:40px;text-align:center;color:#333;background:#f0f2f5}.s{margin-top:20px;color:#666;font-size:13px}</style><div><strong>Connecting to ArcGIS Online…</strong><div class="s">One moment.</div></div>');
+    } catch {}
+    const urlPromise = _preparedAuthUrl ? Promise.resolve(_preparedAuthUrl) : _buildAuthorizeUrl();
+    urlPromise.then(url => { popup.location.href = url; }).catch(err => {
+      try { popup.close(); } catch {}
+      console.error('OAuth start failed:', err);
+      setLoginError('Could not start sign-in. ' + (err.message || ''));
+    });
+    _waitForOAuthResult(popup);
+  } else {
+    const urlPromise = _preparedAuthUrl ? Promise.resolve(_preparedAuthUrl) : _buildAuthorizeUrl();
+    urlPromise.then(url => { window.location.href = url; }).catch(err => {
+      console.error('OAuth start failed:', err);
+      setLoginError('Could not start sign-in. ' + (err.message || ''));
+    });
+  }
+}
+async function _buildAuthorizeUrl() {
+  const verifier = _randomString(48);
+  const challenge = await _sha256base64url(verifier);
+  const state = _randomString(16);
+  sessionStorage.setItem('oauth_verifier', verifier);
+  sessionStorage.setItem('oauth_state', state);
+  const params = new URLSearchParams({
+    client_id: CONFIG.clientId, response_type: 'code', redirect_uri: CONFIG.redirectUri,
+    code_challenge: challenge, code_challenge_method: 'S256',
+    expiration: String(CONFIG.tokenExpirationMinutes), state,
+  });
+  return `${CONFIG.authorizeUrl}?${params}`;
+}
+function _waitForOAuthResult(popup) {
+  let settled = false;
+  const cleanup = () => { window.removeEventListener('message', onMessage); clearInterval(closedTimer); };
+  const onMessage = async (event) => {
+    if (event.origin !== window.location.origin) return;
+    if (!event.data || event.data.type !== 'rvscmp_oauth') return;
+    settled = true; cleanup();
+    if (event.data.error) { setLoginError(event.data.error_description || event.data.error); return; }
+    try {
+      const tok = await exchangeCodeForToken(event.data.code);
+      saveToken(tok); hideLogin(); startApp();
+    } catch (err) {
+      console.error('Token exchange failed:', err);
+      setLoginError(err.message || 'Sign-in failed.');
+    }
+  };
+  window.addEventListener('message', onMessage);
+  const closedTimer = setInterval(() => { if (popup.closed && !settled) cleanup(); }, 500);
+}
+async function exchangeCodeForToken(code) {
+  const verifier = sessionStorage.getItem('oauth_verifier');
+  if (!verifier) throw new Error('Missing PKCE verifier — please sign in again.');
+  const params = new URLSearchParams({
+    client_id: CONFIG.clientId, grant_type: 'authorization_code', code,
+    redirect_uri: CONFIG.redirectUri, code_verifier: verifier, f: 'json',
+  });
+  const res = await fetch(CONFIG.tokenUrl, { method: 'POST', body: params });
+  const data = await res.json();
+  if (data.error) {
+    const msg = (data.error.details && data.error.details[0]) || data.error.message || 'Sign-in failed';
+    throw new Error(msg);
+  }
+  if (!data.access_token) throw new Error('No access token returned');
+  sessionStorage.removeItem('oauth_verifier');
+  sessionStorage.removeItem('oauth_state');
+  return _tokenFromResponse(data);
+}
+async function refreshAccessToken() {
+  if (!TOKEN || !TOKEN.refreshToken) throw new Error('No refresh token available');
+  if (TOKEN.refreshExpiresAt && Date.now() > TOKEN.refreshExpiresAt) throw new Error('Refresh token expired');
+  const params = new URLSearchParams({ client_id: CONFIG.clientId, grant_type: 'refresh_token', refresh_token: TOKEN.refreshToken, f: 'json' });
+  const res = await fetch(CONFIG.tokenUrl, { method: 'POST', body: params });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || 'Token refresh failed');
+  if (!data.access_token) throw new Error('No access token in refresh response');
+  return _tokenFromResponse(data);
+}
+let _refreshInFlight = null;
+async function ensureFreshToken() {
+  if (!TOKEN) throw new Error('Not signed in');
+  if (TOKEN.expiresAt && Date.now() < TOKEN.expiresAt - CONFIG.refreshBufferMs) return;
+  if (!_refreshInFlight) {
+    _refreshInFlight = refreshAccessToken().then(fresh => { saveToken(fresh); }).finally(() => { _refreshInFlight = null; });
+  }
+  return _refreshInFlight;
+}
+const loginScreen = () => document.getElementById('login-screen');
+const appShell = () => document.getElementById('app');
+function showLogin() {
+  loginScreen().hidden = false;
+  appShell().hidden = true;
+  setTimeout(() => { const btn = document.getElementById('oauth-signin-btn'); if (btn) btn.focus(); }, 80);
+  const fallback = document.getElementById('oauth-fallback');
+  if (fallback) {
+    if (isInIframe()) {
+      _buildAuthorizeUrl().then(url => { _preparedAuthUrl = url; fallback.href = url; fallback.hidden = false; }).catch(err => console.warn('Could not pre-build auth URL:', err));
+    } else { fallback.hidden = true; }
+  }
+}
+function hideLogin() { loginScreen().hidden = true; }
+function revealApp() { appShell().hidden = false; if (map) map.invalidateSize(); }
+function setLoginError(msg) {
+  const el = document.getElementById('login-error');
+  if (!el) return;
+  if (!msg) { el.classList.remove('visible'); el.textContent = ''; return; }
+  el.classList.add('visible'); el.textContent = msg;
+}
+function confirmLogout() {
+  if (!confirm('Sign out and clear the cached session?')) return;
+  clearStoredToken();
+  showLogin();
+}
+async function handleOAuthCallback() {
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get('code');
+  const state = url.searchParams.get('state');
+  const error = url.searchParams.get('error');
+  if (!code && !error) return false;
+  if (window.opener && window.opener !== window) {
+    try {
+      window.opener.postMessage({ type: 'rvscmp_oauth', code, state, error, error_description: url.searchParams.get('error_description') || null }, window.location.origin);
+    } catch (e) { console.error('postMessage to opener failed:', e); }
+    setTimeout(() => { try { window.close(); } catch {} }, 50);
+    document.body.innerHTML = '<div style="font-family:DM Sans,sans-serif;padding:40px;text-align:center;color:#333">Sign-in complete. You can close this window.</div>';
+    return true;
+  }
+  if (error) {
+    setLoginError(`Sign-in error: ${url.searchParams.get('error_description') || error}`);
+    history.replaceState({}, '', url.pathname);
+    return false;
+  }
+  const expectedState = sessionStorage.getItem('oauth_state');
+  if (expectedState && state !== expectedState) {
+    setLoginError('Sign-in failed: state mismatch. Please try again.');
+    history.replaceState({}, '', url.pathname);
+    return false;
+  }
+  try {
+    const tok = await exchangeCodeForToken(code);
+    saveToken(tok);
+    history.replaceState({}, '', url.pathname);
+    return true;
+  } catch (err) {
+    console.error('Token exchange failed:', err);
+    setLoginError(err.message || 'Sign-in failed.');
+    history.replaceState({}, '', url.pathname);
+    return false;
+  }
+}
+async function arcgisFetch(url, _retried) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  if (data.error) {
+    if ((data.error.code === 498 || data.error.code === 499) && !_retried && TOKEN && TOKEN.refreshToken) {
+      try {
+        const fresh = await refreshAccessToken();
+        saveToken(fresh);
+        const newUrl = url.replace(/([?&]token=)[^&]+/, `$1${encodeURIComponent(fresh.accessToken)}`);
+        return arcgisFetch(newUrl, true);
+      } catch (e) {}
+    }
+    if (data.error.code === 498 || data.error.code === 499) {
+      const err = new Error('Token expired or invalid'); err.tokenExpired = true; throw err;
+    }
+    throw new Error(`ArcGIS error ${data.error.code}: ${data.error.message}`);
+  }
+  return data;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  ITEM → FEATURE SERVICE URL RESOLUTION
+//  Resolves each AGOL item id to its layer-0 query URL, the same way
+//  gis.content.get(itemId).layers[0] does in the Python migration
+//  script — so this app only ever needs the item ids, not a hardcoded
+//  (and easily stale) FeatureServer URL.
+// ════════════════════════════════════════════════════════════════
+async function resolveServiceUrls() {
+  for (const key of ['source', 'target']) {
+    const itemId = SIDES[key].itemId;
+    if (!itemId || itemId.startsWith('PASTE_')) {
+      throw new Error(`${SIDES[key].label}: no item id configured yet (see CONFIG.${key}ItemId at the top of the script).`);
+    }
+    const url = `${CONFIG.itemInfoUrl}/${itemId}?f=json&token=${encodeURIComponent(TOKEN.accessToken)}`;
+    const data = await arcgisFetch(url);
+    if (!data.url) throw new Error(`${SIDES[key].label}: item ${itemId} has no hosted service URL (is it a Feature Layer item?).`);
+    // data.url is the FeatureServer's root; layer 0 is what both RVS forms
+    // publish their single layer as (matches the Python script's
+    // `.layers[0]` too).
+    SERVICE_URL[key] = `${data.url.replace(/\/$/, '')}/0`;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  DATA FETCHING
+// ════════════════════════════════════════════════════════════════
+function esc(v) { return String(v).replace(/'/g, "''"); }
+
+// Paginated query helper — pulls every record matching `where` from one
+// side's layer, paging with resultOffset the same way the PREDS app does.
+async function queryAllFeatures(sideKey, where, outFields, returnGeometry = true) {
+  const pageSize = 2000;
+  const allFeatures = [];
+  let offset = 0, more = true, safety = 50;
+  while (more && safety-- > 0) {
+    const params = new URLSearchParams({
+      where, outFields, returnGeometry: String(returnGeometry), outSR: '4326', f: 'json',
+      resultOffset: String(offset), resultRecordCount: String(pageSize),
+      token: TOKEN.accessToken,
+    });
+    const data = await arcgisFetch(`${SERVICE_URL[sideKey]}/query?${params}`);
+    const feats = data.features || [];
+    allFeatures.push(...feats);
+    more = (data.exceededTransferLimit === true) || (feats.length === pageSize);
+    offset += feats.length;
+    if (feats.length === 0) break;
+  }
+  return allFeatures;
+}
+
+// ── Scope list (state/county combinations present on either side) ──
+let SCOPES = []; // [{state, county, sourceCount, targetCount}]
+async function loadScopes() {
+  const scopeMap = new Map(); // "STATE|COUNTY" -> {state, county, sourceCount, targetCount}
+  for (const key of ['source', 'target']) {
+    const feats = await queryAllFeatures(key, '1=1', 'State,County', false);
+    for (const f of feats) {
+      const state = (f.attributes.State || '').trim() || 'Unknown';
+      const county = (f.attributes.County || '').trim() || 'Unknown';
+      const k = `${state}|${county}`;
+      if (!scopeMap.has(k)) scopeMap.set(k, { state, county, sourceCount: 0, targetCount: 0 });
+      scopeMap.get(k)[`${key}Count`]++;
+    }
+  }
+  SCOPES = [...scopeMap.values()].sort((a, b) => a.state.localeCompare(b.state) || a.county.localeCompare(b.county));
+}
+
+// ── Full record fetch + translation + matching for one scope ──────
+let currentScope = null;   // {state, county}
+let results = [];          // comparison result rows (see buildComparison())
+let searchTerm = '';
+let activeStatusFilter = 'all'; // all | mismatch | match | sourceonly | targetonly
+
+function whereForScope(scope) {
+  return `State='${esc(scope.state)}' AND County='${esc(scope.county)}'`;
+}
+
+// Applies RENAME_MAP + FIELD_VALUE_MAP + CONSOLIDATION_MAP to a raw
+// source attributes object, producing an object keyed by TARGET field
+// names — i.e. "what this source record should look like once migrated".
+// Mirrors translate_value()/RENAME_MAP/CONSOLIDATION_MAP in the Python
+// script exactly.
+function translateSourceRecord(attrs) {
+  const out = {};
+  for (const f of IDENTITY_COMPARE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(attrs, f)) out[f] = translateValue(f, attrs[f]);
+  }
+  for (const f of DIRECT_COMPARE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(attrs, f)) out[f] = translateValue(f, attrs[f]);
+  }
+  for (const { src, tgt } of RENAMED_COMPARE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(attrs, src)) out[tgt] = translateValue(src, attrs[src]);
+  }
+  const checklist = { VertIrregularitiesPresent: [], PlanIrregularitiesPresent: [] };
+  for (const [src, [field, code]] of Object.entries(CONSOLIDATION_MAP)) {
+    const v = attrs[src];
+    if (typeof v === 'string' && v.trim().toLowerCase() === 'yes') checklist[field].push(code);
+  }
+  for (const [field, codes] of Object.entries(checklist)) out[field] = codes.length ? codes.join(' ') : null;
+  return out;
+}
+
+function normAddr(a) {
+  return String(a || '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+}
+function roundCoord(n) { return Math.round(n * 100000) / 100000; } // ~1m precision
+
+// Matches source records to target records:
+//   1) exact-ish geometry match (geometry is copied unchanged by the
+//      migration script, so a real migrated pair should line up almost
+//      exactly)
+//   2) fallback: normalized Address+City match, for anything geometry
+//      matching missed
+// Anything left over on either side is reported as source-only /
+// target-only.
+function matchRecords(sourceFeats, targetFeats) {
+  const targetByCoord = new Map();
+  const targetByAddr = new Map();
+  const usedTarget = new Set();
+  targetFeats.forEach((f, i) => {
+    if (f.geometry) targetByCoord.set(`${roundCoord(f.geometry.x)},${roundCoord(f.geometry.y)}`, i);
+    const key = `${normAddr(f.attributes.Address)}|${normAddr(f.attributes.City)}`;
+    if (key !== '|' && !targetByAddr.has(key)) targetByAddr.set(key, i);
+  });
+  const rows = [];
+  sourceFeats.forEach(sf => {
+    let ti = -1;
+    if (sf.geometry) {
+      const ck = `${roundCoord(sf.geometry.x)},${roundCoord(sf.geometry.y)}`;
+      if (targetByCoord.has(ck) && !usedTarget.has(targetByCoord.get(ck))) ti = targetByCoord.get(ck);
+    }
+    if (ti === -1) {
+      const ak = `${normAddr(sf.attributes.Address)}|${normAddr(sf.attributes.City)}`;
+      if (targetByAddr.has(ak) && !usedTarget.has(targetByAddr.get(ak))) ti = targetByAddr.get(ak);
+    }
+    if (ti !== -1) {
+      usedTarget.add(ti);
+      rows.push(buildComparisonRow(sf, targetFeats[ti]));
+    } else {
+      rows.push(buildComparisonRow(sf, null));
+    }
+  });
+  targetFeats.forEach((tf, i) => {
+    if (!usedTarget.has(i)) rows.push(buildComparisonRow(null, tf));
+  });
+  return rows;
+}
+
+function buildComparisonRow(sourceFeat, targetFeat) {
+  const sAttrs = sourceFeat ? sourceFeat.attributes : null;
+  const tAttrs = targetFeat ? targetFeat.attributes : null;
+  const translatedSource = sAttrs ? translateSourceRecord(sAttrs) : null;
+  let status, mismatchFields = [];
+  if (sAttrs && tAttrs) {
+    const allFields = new Set([...IDENTITY_COMPARE_FIELDS, ...DIRECT_COMPARE_FIELDS, ...RENAMED_COMPARE_FIELDS.map(r => r.tgt), ...CONSOLIDATED_TARGET_FIELDS]);
+    for (const f of allFields) {
+      const sv = normEmpty(translatedSource[f]);
+      const tv = normEmpty(tAttrs[f]);
+      if (sv !== tv) mismatchFields.push(f);
+    }
+    status = mismatchFields.length ? 'mismatch' : 'match';
+  } else if (sAttrs) {
+    status = 'sourceonly';
+  } else {
+    status = 'targetonly';
+  }
+  const primary = tAttrs || sAttrs;
+  const geom = (targetFeat && targetFeat.geometry) || (sourceFeat && sourceFeat.geometry) || null;
+  return {
+    id: `r${results.length}_${Math.random().toString(36).slice(2, 8)}`,
+    status, mismatchFields,
+    sourceAttrs: sAttrs, targetAttrs: tAttrs, translatedSource,
+    sourceObjectId: sAttrs ? resolveOid(sAttrs) : null,
+    targetObjectId: tAttrs ? resolveOid(tAttrs) : null,
+    sourceGeom: sourceFeat ? sourceFeat.geometry : null,
+    targetGeom: targetFeat ? targetFeat.geometry : null,
+    buildingName: (tAttrs && tAttrs.BuildingName) || (sAttrs && sAttrs.BuildingName) || '',
+    address: (tAttrs && tAttrs.Address) || (sAttrs && sAttrs.Address) || 'Unknown address',
+    city: (tAttrs && tAttrs.City) || (sAttrs && sAttrs.City) || '',
+    state: (tAttrs && tAttrs.State) || (sAttrs && sAttrs.State) || '',
+    county: (tAttrs && tAttrs.County) || (sAttrs && sAttrs.County) || '',
+  };
+}
+function normEmpty(v) {
+  if (v === null || v === undefined) return '';
+  const s = String(v).trim();
+  return s === '' ? '' : s;
+}
+function resolveOid(attrs) {
+  const direct = attrs.objectid ?? attrs.OBJECTID ?? attrs.ObjectId;
+  if (direct !== undefined && direct !== null) return direct;
+  const key = Object.keys(attrs).find(k => /^objectid$/i.test(k));
+  return key ? attrs[key] : undefined;
+}
+
+async function loadComparisonForScope(scope) {
+  setLoadingState(true);
+  try { await ensureFreshToken(); } catch (err) {
+    clearStoredToken(); showLogin(); return;
+  }
+  const where = whereForScope(scope);
+  try {
+    const [sourceFeats, targetFeats] = await Promise.all([
+      queryAllFeatures('source', where, '*'),
+      queryAllFeatures('target', where, '*'),
+    ]);
+    results = matchRecords(sourceFeats, targetFeats);
+    setLoadingState(false);
+    setOfflineBanner(false);
+    updateLastRefreshed(false, Date.now());
+    renderList();
+    renderMap();
+  } catch (err) {
+    console.error('Comparison load failed:', err);
+    setLoadingState(false);
+    if (err.tokenExpired) {
+      clearStoredToken();
+      alert('Your session has expired. Please sign in again.');
+      showLogin();
+      return;
+    }
+    showError(`Could not load records for this scope.<br><small>${escapeHtml(err.message)}</small>`);
+  }
+}
+
+// ── Attachments (parameterized by side, same endpoint pattern as PREDS) ──
+const attachmentCache = new Map(); // key: `${side}:${objectId}` -> {status, result, promise}
+function getAttachmentInfoCached(side, objectId) {
+  const key = `${side}:${objectId}`;
+  const existing = attachmentCache.get(key);
+  if (existing) return existing.status === 'done' ? Promise.resolve(existing.result) : existing.promise;
+  const entry = { status: 'loading', result: null, promise: null };
+  entry.promise = fetchAttachmentInfo(side, objectId).then(result => { entry.status = 'done'; entry.result = result; return result; });
+  attachmentCache.set(key, entry);
+  return entry.promise;
+}
+async function fetchAttachmentInfo(side, objectId) {
+  if (!TOKEN) return { state: 'error', message: 'Not signed in', infos: [] };
+  if (objectId === undefined || objectId === null) return { state: 'ok', infos: [] };
+  try { await ensureFreshToken(); } catch { return { state: 'error', message: 'Session expired — sign in again', infos: [] }; }
+  const serviceUrl = SERVICE_URL[side];
+  const attempts = [
+    { name: 'queryAttachments', url: `${serviceUrl}/queryAttachments?` + new URLSearchParams({ objectIds: String(objectId), returnUrl: 'true', f: 'json', token: TOKEN.accessToken }),
+      parse: (data) => { const groups = data.attachmentGroups || []; const g = groups.find(x => String(x.parentObjectId) === String(objectId)) || groups[0]; return (g && g.attachmentInfos) || []; } },
+    { name: 'per-feature /attachments', url: `${serviceUrl}/${objectId}/attachments?f=json&token=${encodeURIComponent(TOKEN.accessToken)}`,
+      parse: (data) => data.attachmentInfos || [] },
+  ];
+  let lastErr = null;
+  for (const attempt of attempts) {
+    try {
+      const res = await fetch(attempt.url);
+      const data = await res.json();
+      if (data.error) { lastErr = new Error(`${data.error.code} ${data.error.message || ''}`); continue; }
+      const raw = attempt.parse(data) || [];
+      if (raw.length === 0) continue;
+      const infos = raw.map(a => {
+        let attUrl = a.url || `${serviceUrl}/${objectId}/attachments/${a.id}`;
+        if (!/[?&]token=/.test(attUrl)) attUrl += (attUrl.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN.accessToken);
+        return { id: a.id, name: a.name, contentType: a.contentType, url: attUrl, isImage: (a.contentType || '').startsWith('image/') };
+      });
+      return { state: 'ok', infos };
+    } catch (err) { lastErr = err; }
+  }
+  if (!lastErr) return { state: 'ok', infos: [] };
+  return { state: 'error', message: lastErr.message, infos: [] };
+}
+
+// ════════════════════════════════════════════════════════════════
+//  UI HELPERS
+// ════════════════════════════════════════════════════════════════
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+function setLoadingState(loading) {
+  document.getElementById('loading-bar').style.display = loading ? 'block' : 'none';
+  if (loading) document.getElementById('list-count').textContent = 'Loading…';
+}
+function updateLastRefreshed(stale, ts) {
+  const el = document.getElementById('last-refreshed');
+  const d = new Date(ts);
+  el.innerHTML = (stale ? '<span class="stale-badge">Cached</span> ' : '') + 'Updated ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+function setOfflineBanner(on) {
+  const el = document.getElementById('offline-banner');
+  el.hidden = !on;
+  if (on) el.innerHTML = 'Showing cached data — connection unavailable. <button onclick="loadComparisonForScope(currentScope)" style="background:none;border:none;color:#6b4200;font-weight:700;text-decoration:underline;cursor:pointer;font-family:inherit;font-size:inherit">Retry</button>';
+}
+function showError(msg) {
+  document.getElementById('asset-list').innerHTML = `<div class="empty-state" role="status"><div class="icon">⚠️</div><p>${msg}</p></div>`;
+  document.getElementById('list-count').textContent = 'Error';
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SCOPE PICKER
+// ════════════════════════════════════════════════════════════════
+async function showScopeScreen() {
+  document.getElementById('scope-screen').hidden = false;
+  document.getElementById('scope-screen-list').innerHTML = '<div class="scope-screen-loading">Loading states &amp; counties…</div>';
+  try {
+    await loadScopes();
+    renderScopeScreenList();
+  } catch (err) {
+    console.error(err);
+    document.getElementById('scope-screen-list').innerHTML = `<div class="scope-screen-loading">Could not load scopes.<br><small>${escapeHtml(err.message)}</small></div>`;
+  }
+}
+function hideScopeScreen() { document.getElementById('scope-screen').hidden = true; }
+function renderScopeScreenList() {
+  const term = (document.getElementById('scope-search-input').value || '').toLowerCase();
+  const list = document.getElementById('scope-screen-list');
+  const filtered = SCOPES.filter(s => !term || s.state.toLowerCase().includes(term) || s.county.toLowerCase().includes(term));
+  if (!filtered.length) { list.innerHTML = '<div class="scope-screen-loading">No matches.</div>'; return; }
+  list.innerHTML = filtered.map(s => `
+    <button type="button" class="scope-option" onclick="selectScope('${escapeHtml(s.state)}','${escapeHtml(s.county)}')">
+      <div class="scope-option-name">${escapeHtml(s.county)} County, ${escapeHtml(s.state)}</div>
+      <div class="scope-option-counts">
+        <span class="scope-count ${s.sourceCount ? '' : 'zero'}"><span class="scope-count-dot" style="background:var(--sourceonly)"></span>${s.sourceCount} source</span>
+        <span class="scope-count ${s.targetCount ? '' : 'zero'}"><span class="scope-count-dot" style="background:var(--targetonly)"></span>${s.targetCount} target</span>
+      </div>
+    </button>`).join('');
+}
+function selectScope(state, county) {
+  currentScope = { state, county };
+  hideScopeScreen();
+  revealApp();
+  document.getElementById('scope-label').textContent = `${county} County, ${state}`;
+  searchTerm = ''; document.getElementById('search-input').value = '';
+  activeStatusFilter = 'all';
+  loadComparisonForScope(currentScope);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  STATUS CHIPS / SEARCH / FILTERING
+// ════════════════════════════════════════════════════════════════
+const STATUS_META = {
+  all:        { label: 'All',              dot: null },
+  mismatch:   { label: 'Mismatches',        dot: 'var(--mismatch)' },
+  match:      { label: 'Clean matches',     dot: 'var(--match)' },
+  sourceonly: { label: 'Source only',       dot: 'var(--sourceonly)' },
+  targetonly: { label: 'Target only',       dot: 'var(--targetonly)' },
+};
+function statusCounts() {
+  const c = { all: results.length, mismatch: 0, match: 0, sourceonly: 0, targetonly: 0 };
+  results.forEach(r => c[r.status]++);
+  return c;
+}
+function renderStatusChips() {
+  const counts = statusCounts();
+  const el = document.getElementById('status-chips');
+  el.innerHTML = Object.keys(STATUS_META).map(key => {
+    const m = STATUS_META[key];
+    const active = activeStatusFilter === key ? 'active' : '';
+    const dot = m.dot ? `<span class="rtchip-dot" style="background:${m.dot}"></span>` : '';
+    return `<button type="button" class="rtchip ${active}" onclick="setStatusFilter('${key}')">${dot}${m.label} (${counts[key]})</button>`;
+  }).join('');
+}
+function setStatusFilter(key) { activeStatusFilter = key; renderStatusChips(); renderList(); }
+function onSearch() { searchTerm = document.getElementById('search-input').value.toLowerCase(); renderList(); }
+function getFiltered() {
+  let list = results;
+  if (activeStatusFilter !== 'all') list = list.filter(r => r.status === activeStatusFilter);
+  if (searchTerm) {
+    list = list.filter(r => `${r.address} ${r.buildingName} ${r.city}`.toLowerCase().includes(searchTerm));
+  }
+  // Mismatches first, then source-only/target-only, clean matches last.
+  const order = { mismatch: 0, sourceonly: 1, targetonly: 1, match: 2 };
+  return [...list].sort((a, b) => (order[a.status] - order[b.status]) || a.address.localeCompare(b.address));
+}
+
+// ════════════════════════════════════════════════════════════════
+//  LIST / CARD RENDERING
+// ════════════════════════════════════════════════════════════════
+const STATUS_ICONS = {
+  mismatch:   { bg: 'var(--mismatch)',   svg: '<path d="M12 9v4M12 17h.01M10.3 3.86 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.86a2 2 0 0 0-3.4 0Z" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' },
+  match:      { bg: 'var(--match)',      svg: '<path d="M20 6 9 17l-5-5" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>' },
+  sourceonly: { bg: 'var(--sourceonly)', svg: '<path d="M12 2v20M2 12h20" fill="none" stroke="white" stroke-width="2" stroke-linecap="round"/><text x="12" y="16" font-size="11" fill="white" text-anchor="middle" font-family="DM Sans" font-weight="700">S</text>' },
+  targetonly: { bg: 'var(--targetonly)', svg: '<text x="12" y="16" font-size="11" fill="white" text-anchor="middle" font-family="DM Sans" font-weight="700">T</text>' },
+};
+function statusIconHTML(status) {
+  const m = STATUS_ICONS[status] || STATUS_ICONS.match;
+  return `<svg viewBox="0 0 24 24">${m.svg}</svg>`;
+}
+function renderList() {
+  renderStatusChips();
+  const filtered = getFiltered();
+  document.getElementById('list-count').textContent = `${filtered.length} of ${results.length} result${results.length === 1 ? '' : 's'}`;
+  const c = document.getElementById('asset-list');
+  if (!results.length) {
+    c.innerHTML = '<div class="empty-state" role="status"><div class="icon" aria-hidden="true">🗂️</div><p>No records found for this state/county on either service.</p></div>';
+    return;
+  }
+  if (!filtered.length) {
+    c.innerHTML = '<div class="empty-state" role="status"><div class="icon" aria-hidden="true">🔍</div><p>No results match your search or filter.</p></div>';
+    return;
+  }
+  c.innerHTML = filtered.map(renderCard).join('');
+}
+function renderCard(r) {
+  const m = STATUS_ICONS[r.status] || STATUS_ICONS.match;
+  const statusText = { mismatch: `${r.mismatchFields.length} field mismatch${r.mismatchFields.length === 1 ? '' : 'es'}`, match: 'Clean match', sourceonly: 'Source only — not migrated?', targetonly: 'Target only — no source match' }[r.status];
+  return `
+    <div class="cmp-card" role="listitem" tabindex="0" onclick="openDetail('${r.id}')" onkeydown="if(event.key==='Enter')openDetail('${r.id}')">
+      <div class="card-body">
+        <div class="card-strip" style="background:${m.bg}"></div>
+        <div class="card-content">
+          <div class="card-top">
+            <div class="status-icon" style="background:${m.bg}">${statusIconHTML(r.status)}</div>
+            <div class="card-titles">
+              <div class="card-name">${escapeHtml(r.buildingName || r.address)}</div>
+              <div class="card-addr">${escapeHtml(r.address)}${r.city ? ', ' + escapeHtml(r.city) : ''}</div>
+            </div>
+          </div>
+          <div class="meta-badges">
+            <span class="meta-badge ${r.status === 'mismatch' ? 'mismatch' : (r.status === 'match' ? 'match' : '')}">${statusText}</span>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+function getResult(id) { return results.find(r => r.id === id); }
+
+// ════════════════════════════════════════════════════════════════
+//  MAP (secondary/reference — plain OSM tiles, no basemap toggle or
+//  boundary layers; just source/target/matched pins for the current
+//  scope's results)
+// ════════════════════════════════════════════════════════════════
+let map = null, markersLayer = null, mapVisible = true;
+function initMap() {
+  map = L.map('map', { zoomControl: true, attributionControl: true }).setView([35.5, -86.5], 6);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '&copy; OpenStreetMap contributors',
+  }).addTo(map);
+  markersLayer = L.layerGroup().addTo(map);
+}
+function toggleMap() {
+  mapVisible = !mapVisible;
+  document.getElementById('map-container').classList.toggle('collapsed', !mapVisible);
+  document.getElementById('map-toggle-btn').textContent = mapVisible ? 'Hide map' : 'Show map';
+  if (mapVisible && map) setTimeout(() => map.invalidateSize(), 320);
+}
+function addPin(geom, color, popupHtml, rowId, bounds) {
+  if (!geom) return;
+  const c = L.circleMarker([geom.y, geom.x], { radius: 7, color: '#fff', weight: 1.5, fillColor: resolveCssVar(color), fillOpacity: 0.95 }).addTo(markersLayer);
+  c.bindPopup(popupHtml);
+  c.on('click', () => openDetail(rowId));
+  bounds.push([geom.y, geom.x]);
+}
+function renderMap() {
+  if (!map) return;
+  markersLayer.clearLayers();
+  const bounds = [];
+  results.forEach(r => {
+    if (r.status === 'match') {
+      addPin(r.targetGeom, 'var(--match)', buildPopupHtml(r, 'target'), r.id, bounds);
+    } else if (r.status === 'mismatch') {
+      addPin(r.sourceGeom, 'var(--mismatch)', buildPopupHtml(r, 'source'), r.id, bounds);
+      addPin(r.targetGeom, 'var(--mismatch)', buildPopupHtml(r, 'target'), r.id, bounds);
+    } else if (r.status === 'sourceonly') {
+      addPin(r.sourceGeom, SIDES.source.color, buildPopupHtml(r, 'source'), r.id, bounds);
+    } else if (r.status === 'targetonly') {
+      addPin(r.targetGeom, SIDES.target.color, buildPopupHtml(r, 'target'), r.id, bounds);
+    }
+  });
+  if (bounds.length) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
+}
+function resolveCssVar(v) {
+  if (!v.startsWith('var(')) return v;
+  const name = v.slice(4, -1);
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#888';
+}
+function buildPopupHtml(r, side) {
+  const label = r.status === 'match' ? 'Matched' : (r.status === 'mismatch' ? `Mismatch (${side})` : SIDES[side].short);
+  return `<div class="pop"><div class="pop-source" style="color:${resolveCssVar(SIDES[side].color)}">${escapeHtml(label)}</div><div class="pop-name">${escapeHtml(r.buildingName || r.address)}</div><div class="pop-addr">${escapeHtml(r.address)}${r.city ? ', ' + escapeHtml(r.city) : ''}</div></div>`;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  DETAIL SHEET — side-by-side (target | source) field diff
+// ════════════════════════════════════════════════════════════════
+function isBlank(v) { return v === null || v === undefined || String(v).trim() === ''; }
+function diffValCell(field, val, isMismatch) {
+  const cls = ['diff-val'];
+  if (isMismatch) cls.push('mismatch');
+  if (isBlank(val)) cls.push('empty');
+  return `<div class="${cls.join(' ')}">${isBlank(val) ? '—' : escapeHtml(val)}</div>`;
+}
+function diffSection(title, fields, r) {
+  const rows = fields.map(f => {
+    const label = escapeHtml(labelFor(f));
+    const tgtVal = r.targetAttrs ? r.targetAttrs[f] : undefined;
+    const srcVal = r.translatedSource ? r.translatedSource[f] : undefined;
+    const mismatch = r.targetAttrs && r.translatedSource && normEmpty(tgtVal) !== normEmpty(srcVal);
+    return `<div class="diff-key">${label}</div>${diffValCell(f, tgtVal, mismatch)}${diffValCell(f, srcVal, mismatch)}`;
+  }).join('');
+  return `
+    <div class="sec">
+      <div class="sec-label">${title}</div>
+      <div class="diff-grid">
+        <div class="diff-head">Field</div><div class="diff-head">Target</div><div class="diff-head">Source (translated)</div>
+        ${rows}
+      </div>
+    </div>`;
+}
+function attachmentColHtml(side, objectId) {
+  const domId = `att-${side}-${objectId}`;
+  return `
+    <div>
+      <div class="attachment-col-label">${SIDES[side].short}</div>
+      <div class="attachment-grid" id="${domId}">
+        <div class="attachment-tile loading"></div>
+      </div>
+    </div>`;
+}
+async function loadAttachmentsInto(side, objectId) {
+  const el = document.getElementById(`att-${side}-${objectId}`);
+  if (!el) return;
+  if (objectId === undefined || objectId === null) { el.innerHTML = '<div class="attachment-tile"><div class="fileinfo">No record</div></div>'; return; }
+  const result = await getAttachmentInfoCached(side, objectId);
+  if (result.state === 'error') { el.innerHTML = `<div class="attachment-tile"><div class="fileinfo">${escapeHtml(result.message)}</div></div>`; return; }
+  if (!result.infos.length) { el.innerHTML = '<div class="attachment-tile"><div class="fileinfo">No attachments</div></div>'; return; }
+  el.innerHTML = result.infos.map(a => a.isImage
+    ? `<div class="attachment-tile" onclick="openLightbox('${a.url}','${escapeHtml(a.name)}')"><img src="${a.url}" alt="${escapeHtml(a.name)}" loading="lazy"></div>`
+    : `<div class="attachment-tile" onclick="window.open('${a.url}','_blank')"><div class="fileinfo">${escapeHtml(a.name)}</div></div>`
+  ).join('');
+}
+function fullAddr(attrs) {
+  if (!attrs) return '';
+  return `${attrs.Address || ''}, ${attrs.City || ''}, ${attrs.State || ''} ${attrs.ZIP || ''}`.trim().replace(/,\s*,/g, ',').replace(/,\s*$/, '');
+}
+async function openDetail(id) {
+  const r = getResult(id);
+  if (!r) return;
+  const sheet = document.getElementById('detail-sheet');
+  const body = document.getElementById('detail-body');
+  const statusMeta = { mismatch: { bg: 'var(--mismatch)', label: 'Mismatch', desc: `${r.mismatchFields.length} field${r.mismatchFields.length===1?'':'s'} differ between source and target.` },
+    match: { bg: 'var(--match)', label: 'Clean match', desc: 'Every compared field agrees between source and target.' },
+    sourceonly: { bg: 'var(--sourceonly)', label: 'Source only', desc: 'Found on the Simple Form service but no matching record on Final Form v3 — may not have been migrated yet.' },
+    targetonly: { bg: 'var(--targetonly)', label: 'Target only', desc: 'Found on the Final Form v3 service with no matching source record — may have been entered directly, or matched by an address the source doesn’t share.' } }[r.status];
+  const geom = r.targetGeom || r.sourceGeom;
+  const lat = geom ? geom.y : null, lng = geom ? geom.x : null;
+  body.innerHTML = `
+    <div class="sheet-banner" style="background:${statusMeta.bg}">
+      ${statusIconHTML(r.status)}
+      <div><div class="banner-label">${statusMeta.label}</div><div class="banner-desc">${statusMeta.desc}</div></div>
+    </div>
+    <div class="sheet-header">
+      <div class="sheet-name">${escapeHtml(r.buildingName || r.address)}</div>
+      <div class="sheet-addr">${escapeHtml(r.address)}${r.city ? ', ' + escapeHtml(r.city) : ''}${r.state ? ', ' + escapeHtml(r.state) : ''}</div>
+      <div class="sheet-addr">${escapeHtml(r.county)} County</div>
+    </div>
+    <div class="sdiv"></div>
+    ${diffSection('Identification', IDENTITY_COMPARE_FIELDS, r)}
+    <div class="sdiv"></div>
+    <div class="sec">
+      <div class="sec-label">Attachments</div>
+      <div class="attachment-cols">
+        ${attachmentColHtml('target', r.targetObjectId)}
+        ${attachmentColHtml('source', r.sourceObjectId)}
+      </div>
+    </div>
+    <div class="sdiv"></div>
+    ${diffSection('All other fields', [...DIRECT_COMPARE_FIELDS, ...RENAMED_COMPARE_FIELDS.map(x=>x.tgt), ...CONSOLIDATED_TARGET_FIELDS], r)}
+    ${lat !== null ? `
+    <div class="nav-btns">
+      <a class="nav-btn goo" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${lat},${lng}">Open in Google Maps</a>
+      <a class="nav-btn apl" target="_blank" rel="noopener" href="https://maps.apple.com/?q=${lat},${lng}">Open in Apple Maps</a>
+    </div>` : ''}
+  `;
+  sheet.hidden = false;
+  requestAnimationFrame(() => sheet.classList.add('open'));
+  loadAttachmentsInto('target', r.targetObjectId);
+  loadAttachmentsInto('source', r.sourceObjectId);
+}
+function closeDetail() {
+  const sheet = document.getElementById('detail-sheet');
+  sheet.classList.remove('open');
+  setTimeout(() => { sheet.hidden = true; }, 350);
+}
+function openLightbox(url, name) {
+  document.getElementById('lightbox-img').src = url;
+  document.getElementById('lightbox-img').alt = name || '';
+  document.getElementById('lightbox').hidden = false;
+  document.addEventListener('keydown', _lightboxKey);
+}
+function closeLightbox() {
+  document.getElementById('lightbox').hidden = true;
+  document.getElementById('lightbox-img').src = '';
+  document.removeEventListener('keydown', _lightboxKey);
+}
+function _lightboxKey(e) { if (e.key === 'Escape') closeLightbox(); }
+
+// ════════════════════════════════════════════════════════════════
+//  BOOT
+// ════════════════════════════════════════════════════════════════
+async function startApp() {
+  if (!map) initMap();
+  try {
+    await resolveServiceUrls();
+  } catch (err) {
+    console.error(err);
+    showLogin();
+    setLoginError(err.message);
+    return;
+  }
+  await showScopeScreen();
+}
+(async function init() {
+  const consumedCallback = await handleOAuthCallback();
+  if (consumedCallback && (window.opener && window.opener !== window)) return; // popup branch already tore down the page
+  TOKEN = loadStoredToken();
+  if (TOKEN) {
+    hideLogin();
+    startApp();
+  } else {
+    showLogin();
+  }
+})();
+</script>
+</body>
+</html>
