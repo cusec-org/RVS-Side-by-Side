@@ -245,10 +245,16 @@
   .attachment-tile.loading { background: linear-gradient(90deg, var(--surface2) 25%, #ececec 50%, var(--surface2) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
   @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
   /* ── Image lightbox ──────────────────────────────────────── */
-  #lightbox { position: fixed; inset: 0; z-index: 5500; background: rgba(0,0,0,0.92); display: flex; align-items: center; justify-content: center; padding: 24px; }
+  #lightbox { position: fixed; inset: 0; z-index: 5500; background: rgba(0,0,0,0.92); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; gap: 12px; }
   #lightbox[hidden] { display: none; }
-  #lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px; }
+  #lightbox img { max-width: 100%; max-height: 78vh; object-fit: contain; border-radius: 4px; }
   #lightbox .close { position: absolute; top: max(16px, env(safe-area-inset-top)); right: 16px; background: rgba(0,0,0,0.6); border: 1.5px solid white; color: white; border-radius: 50%; width: 40px; height: 40px; cursor: pointer; font-size: 22px; display: flex; align-items: center; justify-content: center; }
+  #lightbox-caption { color: rgba(255,255,255,0.92); font-size: 13px; text-align: center; max-width: 90%; }
+  #lightbox-caption .cap-tag { display: block; margin-top: 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--cusec-accent); }
+  #lightbox-caption:empty { display: none; }
+  /* Field/tag chip overlaid on an attachment tile, from the attachment's
+     `keywords` (Survey123's record of which question the photo was for). */
+  .attachment-tag { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.62); color: #fff; font-size: 9.5px; font-weight: 700; letter-spacing: 0.2px; padding: 3px 5px; line-height: 1.25; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   @media(min-width:600px){ #app{ box-shadow: var(--shadow-lg); } }
   @media (min-width: 900px) {
     #app { display: grid; grid-template-rows: auto 1fr; grid-template-columns: 460px 1fr; max-width: none; width: 100%; height: 100vh; min-height: 100vh; box-shadow: none; }
@@ -405,6 +411,7 @@
 <div id="lightbox" hidden onclick="closeLightbox()">
   <button class="close" onclick="closeLightbox()" aria-label="Close image">×</button>
   <img id="lightbox-img" alt="">
+  <div id="lightbox-caption"></div>
 </div>
 
 <script>
@@ -1152,7 +1159,11 @@ async function fetchAttachmentInfo(side, objectId) {
       const infos = raw.map(a => {
         let attUrl = a.url || `${serviceUrl}/${objectId}/attachments/${a.id}`;
         if (!/[?&]token=/.test(attUrl)) attUrl += (attUrl.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN.accessToken);
-        return { id: a.id, name: a.name, contentType: a.contentType, url: attUrl, isImage: (a.contentType || '').startsWith('image/') };
+        // `keywords` is how Survey123 (and the ArcGIS attachment API in
+        // general) records which question/field a photo was attached to —
+        // it's the field name itself (e.g. "Exterior", "ExtFallingHazards"),
+        // blank for photos that aren't tied to a specific field.
+        return { id: a.id, name: a.name, contentType: a.contentType, url: attUrl, keywords: a.keywords || '', isImage: (a.contentType || '').startsWith('image/') };
       });
       return { state: 'ok', infos };
     } catch (err) { lastErr = err; }
@@ -1408,6 +1419,16 @@ function attachmentColHtml(side, objectId) {
       </div>
     </div>`;
 }
+// Turn an attachment's `keywords` — how Survey123 / the ArcGIS attachment
+// API records which question a photo was taken for — into a readable tag.
+// Reuses labelFor() so a recognized field gets the same friendly label it
+// shows in the diff grid above (e.g. keywords "ExtFallingHazards" -> "Ext
+// Falling Hazards"); blank when the attachment isn't tied to a field.
+function attachmentFieldTag(keywords) {
+  const raw = String(keywords || '').trim();
+  if (!raw) return '';
+  return raw.split(/[,;]\s*/).filter(Boolean).map(labelFor).join(', ');
+}
 async function loadAttachmentsInto(side, objectId) {
   const el = document.getElementById(`att-${side}-${objectId}`);
   if (!el) return;
@@ -1415,10 +1436,13 @@ async function loadAttachmentsInto(side, objectId) {
   const result = await getAttachmentInfoCached(side, objectId);
   if (result.state === 'error') { el.innerHTML = `<div class="attachment-tile"><div class="fileinfo">${escapeHtml(result.message)}</div></div>`; return; }
   if (!result.infos.length) { el.innerHTML = '<div class="attachment-tile"><div class="fileinfo">No attachments</div></div>'; return; }
-  el.innerHTML = result.infos.map(a => a.isImage
-    ? `<div class="attachment-tile" onclick="openLightbox('${a.url}','${escapeHtml(a.name)}')"><img src="${a.url}" alt="${escapeHtml(a.name)}" loading="lazy"></div>`
-    : `<div class="attachment-tile" onclick="window.open('${a.url}','_blank')"><div class="fileinfo">${escapeHtml(a.name)}</div></div>`
-  ).join('');
+  el.innerHTML = result.infos.map(a => {
+    const tag = attachmentFieldTag(a.keywords);
+    const tagHtml = tag ? `<div class="attachment-tag" title="${escapeHtml(tag)}">${escapeHtml(tag)}</div>` : '';
+    return a.isImage
+      ? `<div class="attachment-tile" onclick="openLightbox('${a.url}','${escapeHtml(a.name)}','${escapeHtml(tag)}')"><img src="${a.url}" alt="${escapeHtml(a.name)}" loading="lazy">${tagHtml}</div>`
+      : `<div class="attachment-tile" onclick="window.open('${a.url}','_blank')"><div class="fileinfo">${escapeHtml(a.name)}${tag ? `<br><span style="opacity:.65">${escapeHtml(tag)}</span>` : ''}</div></div>`;
+  }).join('');
 }
 function fullAddr(attrs) {
   if (!attrs) return '';
@@ -1487,15 +1511,19 @@ function positionDetailPanel() {
 }
 window.addEventListener('resize', () => { if (!document.getElementById('detail-sheet').hidden) positionDetailPanel(); });
 DESKTOP_MQ.addEventListener('change', () => { if (!document.getElementById('detail-sheet').hidden) positionDetailPanel(); });
-function openLightbox(url, name) {
+function openLightbox(url, name, tag) {
   document.getElementById('lightbox-img').src = url;
   document.getElementById('lightbox-img').alt = name || '';
+  document.getElementById('lightbox-caption').innerHTML = name
+    ? `${escapeHtml(name)}${tag ? `<div class="cap-tag">${escapeHtml(tag)}</div>` : ''}`
+    : '';
   document.getElementById('lightbox').hidden = false;
   document.addEventListener('keydown', _lightboxKey);
 }
 function closeLightbox() {
   document.getElementById('lightbox').hidden = true;
   document.getElementById('lightbox-img').src = '';
+  document.getElementById('lightbox-caption').innerHTML = '';
   document.removeEventListener('keydown', _lightboxKey);
 }
 function _lightboxKey(e) { if (e.key === 'Escape') closeLightbox(); }
